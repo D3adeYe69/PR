@@ -2,101 +2,110 @@
 
 This report documents a simple HTTP file server and client implemented with raw TCP sockets in Python. The project is containerized with Docker Compose so it can be run consistently anywhere.
 
-### Project Structure
+
+
+
+
+### 1) Contents of source directory
 ```
 project/
-├── server.py              # Main HTTP server
-├── client.py              # HTTP client
-├── Dockerfile             # Docker image definition
-├── docker-compose.yml     # Docker Compose configuration
-└── site/                  # Directory to be served (mount from host)
-    ├── index.html         # Main page (optional; if missing, a listing is shown)
-    ├── image.png          # Image file (optional)
-    ├── books/             # Nested directory with PDFs/PNGs
-    │   └── sample.pdf
-    │    └── Lab1.pdf
-    │    └── Lab2_CS.pdf
-   
+├── server.py
+├── client.py
+├── Dockerfile
+├── docker-compose.yml
+├── README.md
+└── site/
+    ├── index.html
+    ├── image.png
+    └── books/
+        └── sample.pdf
 ```
 
-### What the Project Does
-- Serves files from a chosen directory (`site/`) over HTTP on port 8080
-- Correctly handles and serves HTML, PNG, and PDF files
-- If a directory path is requested and it has no `index.html`, the server generates an HTML directory listing with hyperlinks
-- Handles one HTTP request per connection (intentionally simple)
-- Includes a client that:
-  - Prints HTML responses (pages or directory listings)
-  - Saves PNG/PDF files to a specified directory
+### 2) Docker Compose file and Dockerfile
+- Docker Compose: see `docker-compose.yml`
+- Dockerfile: see `Dockerfile`
 
-### How to Set Up
-- Prerequisite: Install and start Docker Desktop
-- Put your content (HTML, PNG, PDFs, and optional subdirectories like `books/`) into the `site/` folder
-
-### Start the Server
+### 3) How to start the container
 ```bash
 docker compose up --build server
 ```
-Open in browser: `http://localhost:8080/`
+Open `http://localhost:8080/` in the browser.
 
-Notes:
-- If you request a directory without an `index.html`, you’ll see an auto-generated listing.
-- If you update files but see old content, hard refresh (Ctrl+F5).
-
-### Use the Client
-Client command format:
+### 4) Command that runs the server inside the container (with directory argument)
+The container command:
 ```bash
-python client.py <server_host> <server_port> <url_path> <save_directory>
+python server.py /app/site 8080
 ```
-Run via Docker Compose (entrypoint already runs `python client.py`):
+
+### 5) Contents of the served directory
+Example (adjust to your files):
+```
+site/
+├── index.html
+├── image.png
+└── books/
+    └── sample.pdf
+```
+
+### 6) Requests of 4 files in the browser
+- Inexistent file (404): `http://localhost:8080/nope.pdf`
+  
+  ![404 screenshot](screen/image4.png)
+
+- HTML file (with image): `http://localhost:8080/` (or `/index.html`)
+  
+  ![HTML page](screen/image1.png)
+
+- PDF file: `http://localhost:8080/books/sample.pdf`
+  
+  ![PDF viewer](screen/image2.png)
+
+- PNG file: `http://localhost:8080/image.png`
+  
+  ![PNG file](screen/image.png)
+
+Tip: capture screenshots of each response page to include in your submission.
+
+### 7) If you made the client — how to run, show output and saved files
+Print HTML (root page):
 ```bash
 docker compose run --rm client server 8080 / ./downloads
 ```
-Behavior:
-- HTML (page or directory listing): printed to stdout
-- PNG/PDF: saved to the host folder you pass as the last argument
-
-Examples:
+Save PNG:
 ```bash
-# Print the root page (HTML)
-docker compose run --rm client server 8080 / ./downloads
-
-# Save a PNG
 docker compose run --rm client server 8080 /image.png ./downloads
-
-
-# Save a PDF from a nested folder
+```
+Save PDF:
+```bash
 docker compose run --rm client server 8080 /books/sample.pdf ./downloads
 ```
-Where downloads appear:
-- The final argument (e.g., `./downloads`) is a host path relative to this project; files will show up in that folder on your machine.
+After running the above, verify downloaded files in `downloads/` on the host.
 
-### Requirements
-- HTTP server with raw TCP sockets: implemented in `server.py`
-- Supports HTML, PNG, PDF; unknown types → 404: implemented
-- Nested directories and directory listing with links: implemented for any folder without `index.html`
-- HTTP client with specified args, prints HTML or saves PNG/PDF: implemented in `client.py`
-- Docker Compose usage: implemented (`server` and `client` services)
-
-
-### Troubleshooting
-- Seeing old content: hard refresh (Ctrl+F5) or add `?t=1` to the URL
-- 404 for a file: check exact filename and that it’s inside `site/`
-- Want a directory listing: ensure that folder does not contain an `index.html`
-- Clean rebuild:
-```bash
-docker compose down
-docker compose build --no-cache --pull server
-docker compose up server
+### 8) If you made directory listing — page for a subdirectory
+Request a folder without `index.html`, e.g.:
 ```
-
-### Stop and Clean Up
-```bash
-docker compose down -v
+http://localhost:8080/books/
 ```
+This shows the auto-generated directory listing with hyperlinks.
+
+![Subdirectory listing](screen/image7.png)
+
+### 9) If you browsed a friend’s server — LAN setup and screenshots 
+- Find your IP on the server machine (`ipconfig` → IPv4 Address)
+- Friend visits `http://YOUR_IP:8080/` in the same LAN
+
+
+Example screenshots:
+
+![LAN screenshot 1](screen/image5.png)
+
+![LAN screenshot 2](screen/image6.png)
+
 
 ### Conclusion
 This project fulfills the lab requirements:
-- A raw TCP HTTP server serving HTML/PNG/PDF and generating directory listings
-- A client that prints HTML and saves PNG/PDF based on content type
-- Support for nested directories and safe path resolution
-- Fully Dockerized with a Compose workflow for reproducible runs
+
+A raw TCP HTTP server serving HTML/PNG/PDF and generating directory listings
+A client that prints HTML and saves PNG/PDF based on content type
+Support for nested directories and safe path resolution
+Fully Dockerized with a Compose workflow for reproducible runs
