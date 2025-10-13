@@ -1,0 +1,24 @@
+services:
+  server:
+    build: .
+    command: ["python", "server.py", "/app/site", "8080"]
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./site:/app/site
+    restart: unless-stopped
+
+  client:
+    build: .
+    entrypoint: ["python", "client.py"]
+    volumes:
+      - ./downloads:/app/downloads
+      - ./site:/app/site
+    depends_on:
+      - server
+
+networks:
+  default:
+    name: lab1_net
+
+
