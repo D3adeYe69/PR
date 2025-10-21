@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Install dependencies from requirements.txt
+COPY lab2/requirements.txt .
+RUN pip install -r requirements.txt
+
+# Copy Lab 1 files needed for server-lab1
+COPY lab1/server.py lab1/client.py ./
+
+# Copy Lab 2 files
+COPY lab2/*.py ./
+
+# Create mount points
+RUN mkdir -p /app/site /app/downloads
+
+EXPOSE 8080
+
+# Default to Lab 2 server
+CMD ["python", "server_lab2.py", "/app/site", "8080"]

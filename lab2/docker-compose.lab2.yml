@@ -1,0 +1,69 @@
+services:
+  server-lab1:
+    build:
+      context: ..
+      dockerfile: lab1/Dockerfile
+    command: ["python", "server.py", "/app/site", "8080"]
+    ports:
+      - "8083:8080"
+    volumes:
+      - ../site:/app/site
+    restart: unless-stopped
+
+  server-lab2:
+    build:
+      context: ..
+      dockerfile: lab2/Dockerfile.lab2
+    command: ["python", "server_lab2.py", "/app/site", "8080"]
+    ports:
+      - "8081:8080"
+    volumes:
+      - ../site:/app/site
+    restart: unless-stopped
+
+  server-race-demo:
+    build:
+      context: ..
+      dockerfile: lab2/Dockerfile.lab2
+    command: ["python", "server_race_demo.py", "/app/site", "8080", "50"]
+    ports:
+      - "8082:8080"
+    volumes:
+      - ../site:/app/site
+    restart: unless-stopped
+
+  client:
+    build:
+      context: ..
+      dockerfile: lab2/Dockerfile.lab2
+    entrypoint: ["python", "client.py"]
+    volumes:
+      - ../downloads:/app/downloads
+      - ../site:/app/site
+    depends_on:
+      - server-lab2
+
+  tester:
+    build:
+      context: ..
+      dockerfile: lab2/Dockerfile.lab2
+    entrypoint: ["python", "test_concurrent.py"]
+    volumes:
+      - ../downloads:/app/downloads
+    depends_on:
+      - server-lab1
+      - server-lab2
+      - server-race-demo
+
+  race-demo:
+    build:
+      context: ..
+      dockerfile: lab2/Dockerfile.lab2
+    entrypoint: ["python", "demo_race.py"]
+    depends_on:
+      - server-race-demo
+
+networks:
+  default:
+    name: lab2_net
+    external: true
