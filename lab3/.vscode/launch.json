@@ -1,0 +1,35 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "command": "npm start",
+            "name": "Run npm start (runs server.ts)",
+            "request": "launch",
+            "type": "node-terminal"
+        },
+        {
+            "command": "npm run simulation",
+            "name": "Run npm run simulation (runs simulation.ts)",
+            "request": "launch",
+            "type": "node-terminal"
+        },
+        {
+            "command": "npm test",
+            "name": "Run npm test (runs tests in test/)",
+            "request": "launch",
+            "type": "node-terminal"
+        },
+        {
+            "command": "npm run coverage",
+            "name": "Run npm run coverage (for test coverage)",
+            "request": "launch",
+            "type": "node-terminal"
+        },
+        {
+            "command": "npm run lint",
+            "name": "Run npm run lint (for ESLint)",
+            "request": "launch",
+            "type": "node-terminal"
+        }
+    ]
+}
