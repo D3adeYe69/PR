@@ -1,0 +1,36 @@
+services:
+  leader:
+    build: .
+    container_name: kvstore_leader
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - FOLLOWERS=http://followers:8081,http://followers:8082,http://followers:8083,http://followers:8084,http://followers:8085
+      - WRITE_QUORUM=5
+      - MIN_DELAY=0
+      - MAX_DELAY=1000
+    networks:
+      - kvstore_net
+    restart: unless-stopped
+    depends_on:
+      - followers
+
+  followers:
+    build: .
+    container_name: kvstore_followers
+    ports:
+      - "8081:8081"
+      - "8082:8082"
+      - "8083:8083"
+      - "8084:8084"
+      - "8085:8085"
+    command: ["python", "run_followers.py"]
+    networks:
+      - kvstore_net
+    restart: unless-stopped
+
+networks:
+  kvstore_net:
+    driver: bridge
+
