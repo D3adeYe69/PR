@@ -53,25 +53,57 @@ async def replicate_to_follower(follower_url: str, key: str, value: str, delay_m
     """Replicate a key-value pair to a single follower with delay.
     
     Returns a coroutine that, when awaited, returns a dict with replication result.
+    The delay simulates network latency and processing time.
     """
+    start_time = time.time()
+    follower_id = follower_url.split(':')[-1] if ':' in follower_url else follower_url
+    
+    # Log when replication starts (shows race condition - all start concurrently)
+    logger.info(f"[RACE] Starting replication to {follower_id} for key='{key}' with delay={delay_ms}ms")
+    
+    # Apply delay BEFORE network call to simulate network latency
+    # This creates visible race conditions as different followers respond at different times
     await asyncio.sleep(delay_ms / 1000.0)  # Convert ms to seconds
+    
+    elapsed_before_network = (time.time() - start_time) * 1000
     
     try:
         async with aiohttp.ClientSession() as session:
+            network_start = time.time()
             async with session.post(
                 f"{follower_url}/replicate",
                 json={"key": key, "value": value},
                 timeout=aiohttp.ClientTimeout(total=5)
             ) as response:
+                network_time = (time.time() - network_start) * 1000
+                total_time = (time.time() - start_time) * 1000
+                
                 if response.status == 200:
                     result = await response.json()
-                    return {"success": True, "follower": follower_url, "result": result}
+                    logger.info(
+                        f"[RACE] ✓ {follower_id} confirmed key='{key}' "
+                        f"(delay={delay_ms}ms, network={network_time:.1f}ms, total={total_time:.1f}ms)"
+                    )
+                    return {
+                        "success": True,
+                        "follower": follower_url,
+                        "follower_id": follower_id,
+                        "result": result,
+                        "delay_ms": delay_ms,
+                        "total_time_ms": total_time,
+                        "timestamp": time.time()
+                    }
                 else:
-                    return {"success": False, "follower": follower_url, "error": f"Status {response.status}"}
+                    logger.warning(f"[RACE] ✗ {follower_id} failed for key='{key}': Status {response.status}")
+                    return {"success": False, "follower": follower_url, "follower_id": follower_id, "error": f"Status {response.status}"}
     except asyncio.TimeoutError:
-        return {"success": False, "follower": follower_url, "error": "Timeout"}
+        total_time = (time.time() - start_time) * 1000
+        logger.warning(f"[RACE] ✗ {follower_id} timeout for key='{key}' after {total_time:.1f}ms")
+        return {"success": False, "follower": follower_url, "follower_id": follower_id, "error": "Timeout"}
     except Exception as e:
-        return {"success": False, "follower": follower_url, "error": str(e)}
+        total_time = (time.time() - start_time) * 1000
+        logger.error(f"[RACE] ✗ {follower_id} error for key='{key}': {e}")
+        return {"success": False, "follower": follower_url, "follower_id": follower_id, "error": str(e)}
 
 
 @app.post("/write", response_model=WriteResponse)
@@ -87,29 +119,66 @@ async def write(request: WriteRequest):
         store[key] = value
         
         # Calculate how many follower confirmations we need
-        # Quorum includes leader, so we need (WRITE_QUORUM - 1) follower confirmations
-        required_follower_confirmations = max(0, WRITE_QUORUM - 1)
+        # WRITE_QUORUM represents the number of follower confirmations needed
+        # Total confirmations = WRITE_QUORUM followers + 1 leader
+        # For example: WRITE_QUORUM=5 means 5 followers + 1 leader = 6 total
+        required_follower_confirmations = WRITE_QUORUM
         
-        # Semi-synchronous replication: return as soon as we have enough confirmations
-        if not FOLLOWERS or required_follower_confirmations == 0:
-            # Q=1: Only leader confirms, return immediately (no network wait)
+        # Check if we have enough followers
+        if not FOLLOWERS:
+            # No followers available, only leader confirms
+            latency = (time.time() - start_time) * 1000
+            quorum_met = (WRITE_QUORUM == 0)  # Only met if quorum is 0
+            total_confirmations = 1
+            replication_results = []
+        elif required_follower_confirmations == 0:
+            # Q=0: Only leader confirms, return immediately (no network wait)
             latency = (time.time() - start_time) * 1000
             quorum_met = True
             total_confirmations = 1
             replication_results = []
             
             # Still replicate to followers in background (don't wait)
-            if FOLLOWERS:
-                delays = [random.randint(MIN_DELAY, MAX_DELAY) for _ in FOLLOWERS]
-                # Start replication but don't wait
-                for follower, delay in zip(FOLLOWERS, delays):
-                    asyncio.create_task(replicate_to_follower(follower, key, value, delay))
+            delays = [random.randint(MIN_DELAY, MAX_DELAY) for _ in FOLLOWERS]
+            for follower, delay in zip(FOLLOWERS, delays):
+                asyncio.create_task(replicate_to_follower(follower, key, value, delay))
+        elif required_follower_confirmations > len(FOLLOWERS):
+            # Can't meet quorum - not enough followers
+            logger.warning(
+                f"[QUORUM] Cannot meet quorum {WRITE_QUORUM}: only {len(FOLLOWERS)} followers available"
+            )
+            latency = (time.time() - start_time) * 1000
+            quorum_met = False
+            total_confirmations = 1  # Only leader
+            replication_results = []
+            
+            # Still try to replicate to all followers
+            delays = [random.randint(MIN_DELAY, MAX_DELAY) for _ in FOLLOWERS]
+            tasks = [
+                asyncio.create_task(replicate_to_follower(follower, key, value, delay))
+                for follower, delay in zip(FOLLOWERS, delays)
+            ]
+            # Wait for all (but quorum won't be met)
+            for coro in asyncio.as_completed(tasks):
+                try:
+                    result = await coro
+                    replication_results.append(result)
+                except Exception as e:
+                    replication_results.append({"success": False, "error": str(e)})
         else:
-            # Q>=2: Need to wait for follower confirmations
-            # Generate random delays for each follower
+            # Q>=1: Need to wait for follower confirmations
+            # Generate random delays for each follower (this creates race conditions)
             delays = [random.randint(MIN_DELAY, MAX_DELAY) for _ in FOLLOWERS]
             
+            logger.info(
+                f"[QUORUM] Write key='{key}': Need {required_follower_confirmations} follower confirmations "
+                f"(quorum={WRITE_QUORUM} followers + 1 leader = {required_follower_confirmations + 1} total). "
+                f"Delays: {dict(zip([f.split(':')[-1] for f in FOLLOWERS], delays))}"
+            )
+            
             # Start replication to all followers concurrently
+            # This creates a race condition - all followers start at the same time
+            # but finish at different times based on their delays
             tasks = [
                 asyncio.create_task(replicate_to_follower(follower, key, value, delay))
                 for follower, delay in zip(FOLLOWERS, delays)
@@ -122,42 +191,58 @@ async def write(request: WriteRequest):
             
             # Process results as they complete
             # asyncio.as_completed returns tasks in order of completion (fastest first)
-            # So the first result is the fastest follower, second is 2nd fastest, etc.
+            # This shows the race condition - fastest followers respond first
             responses_received = 0
+            completion_order = []
+            
             for coro in asyncio.as_completed(tasks):
                 try:
                     result = await coro
                     responses_received += 1
                     replication_results.append(result)
+                    
                     if result.get('success', False):
                         successful_count += 1
+                        follower_id = result.get('follower_id', 'unknown')
+                        completion_order.append(follower_id)
+                        logger.info(
+                            f"[QUORUM] Confirmation #{successful_count}/{required_follower_confirmations} "
+                            f"from {follower_id} (order: {completion_order})"
+                        )
                     
-                    # Check if we have enough confirmations (including leader = 1)
-                    # We need (WRITE_QUORUM - 1) successful follower responses
+                    # Check if we have enough confirmations
+                    # We need WRITE_QUORUM successful follower responses (leader already counted)
                     if successful_count >= required_follower_confirmations:
                         # Quorum met! Record latency NOW and return
                         latency = (time.time() - start_time) * 1000
                         quorum_met = True
-                        total_confirmations = successful_count + 1
+                        total_confirmations = successful_count + 1  # +1 for leader
                         
-                        logger.debug(
-                            f"Quorum {WRITE_QUORUM} met: {successful_count} followers + leader = "
-                            f"{total_confirmations} total, latency={latency:.2f}ms, "
-                            f"responses_received={responses_received}"
+                        logger.info(
+                            f"[QUORUM] ✓ Quorum MET: {successful_count} followers + 1 leader = "
+                            f"{total_confirmations} total confirmations (required: {WRITE_QUORUM} followers + 1 leader). "
+                            f"Latency={latency:.2f}ms. "
+                            f"Completion order: {completion_order} "
+                            f"({responses_received}/{len(FOLLOWERS)} responses received)"
                         )
                         
                         # Don't wait for remaining - return immediately
-                        # (remaining tasks will complete in background)
+                        # (remaining tasks will complete in background, showing race condition)
                         break
                 except Exception as e:
                     responses_received += 1
                     replication_results.append({"success": False, "error": str(e)})
+                    logger.error(f"[QUORUM] Error processing replication result: {e}")
             
             # If we didn't meet quorum (shouldn't happen with enough followers)
             if not quorum_met:
                 latency = (time.time() - start_time) * 1000
-                total_confirmations = successful_count + 1
-                quorum_met = total_confirmations >= WRITE_QUORUM
+                total_confirmations = successful_count + 1  # +1 for leader
+                quorum_met = successful_count >= required_follower_confirmations
+                logger.warning(
+                    f"[QUORUM] ✗ Quorum NOT met: got {successful_count} follower confirmations "
+                    f"(needed {required_follower_confirmations}) + 1 leader = {total_confirmations} total"
+                )
         
         if quorum_met:
             return WriteResponse(

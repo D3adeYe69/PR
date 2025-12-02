@@ -14,6 +14,7 @@ import numpy as np
 import subprocess
 import sys
 import re
+from collections import defaultdict
 
 LEADER_URL = os.getenv('LEADER_URL', 'http://localhost:8080')
 NUM_WRITES = 100
@@ -245,6 +246,112 @@ def test_write_quorum(quorum_value):
         return None
 
 
+def demonstrate_race_condition_in_quorum_test():
+    """Demonstrate race condition by writing to same key concurrently."""
+    print("\nTesting race condition: 5 concurrent writes to the SAME key...")
+    
+    key = "race_demo_key"
+    num_writes = 5
+    
+    # Perform concurrent writes to the SAME key
+    def write_same_key(write_id):
+        try:
+            response = requests.post(
+                f"{LEADER_URL}/write",
+                json={"key": key, "value": f"value_{write_id}"},
+                timeout=30
+            )
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    "write_id": write_id,
+                    "success": True,
+                    "value": f"value_{write_id}",
+                    "latency_ms": data.get("latency_ms", 0),
+                    "timestamp": time.time()
+                }
+            return {"write_id": write_id, "success": False}
+        except Exception as e:
+            return {"write_id": write_id, "success": False, "error": str(e)}
+    
+    # Start all writes concurrently
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_writes) as executor:
+        futures = [executor.submit(write_same_key, i) for i in range(num_writes)]
+        write_results = [f.result() for f in concurrent.futures.as_completed(futures)]
+    
+    write_results.sort(key=lambda x: x.get("timestamp", 0))
+    
+    print(f"\nWrite completion order:")
+    for i, result in enumerate(write_results, 1):
+        if result["success"]:
+            print(f"  {i}. Write #{result['write_id']} (value='{result['value']}') - {result['latency_ms']:.1f}ms")
+    
+    # Read immediately from all nodes (before all replications complete)
+    print("\nReading from all nodes IMMEDIATELY (to catch race condition)...")
+    time.sleep(0.3)  # Small delay to let some replications happen
+    
+    def read_node(url, node_name):
+        try:
+            response = requests.get(f"{url}/read", params={"key": key}, timeout=2)
+            if response.status_code == 200:
+                return node_name, response.json()["value"]
+            return node_name, "NOT_FOUND"
+        except:
+            return node_name, "ERROR"
+    
+    followers = [
+        ('http://localhost:8081', 'Follower1'),
+        ('http://localhost:8082', 'Follower2'),
+        ('http://localhost:8083', 'Follower3'),
+        ('http://localhost:8084', 'Follower4'),
+        ('http://localhost:8085', 'Follower5')
+    ]
+    
+    # Read from leader
+    leader_value = read_node(LEADER_URL, 'Leader')[1]
+    
+    # Read from all followers concurrently
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(followers)) as executor:
+        futures = [executor.submit(read_node, url, name) for url, name in followers]
+        follower_values = dict(f.result() for f in concurrent.futures.as_completed(futures))
+    
+    print("\nValues found in each node:")
+    print(f"  Leader:    {leader_value}")
+    for name in ['Follower1', 'Follower2', 'Follower3', 'Follower4', 'Follower5']:
+        print(f"  {name}:  {follower_values.get(name, 'ERROR')}")
+    
+    # Check for race condition
+    all_values = {leader_value} | set(follower_values.values())
+    unique_values = [v for v in all_values if v not in ["NOT_FOUND", "ERROR"]]
+    
+    print(f"\nRace condition detected: {len(unique_values) > 1}")
+    if len(unique_values) > 1:
+        print(f"  ✓ Found {len(unique_values)} different values: {sorted(unique_values)}")
+        print("\n  What this means:")
+        print("    - We wrote 5 times to the same key concurrently:")
+        print("      • Write #0 → value='value_0'")
+        print("      • Write #1 → value='value_1'")
+        print("      • Write #2 → value='value_2'")
+        print("      • Write #3 → value='value_3'")
+        print("      • Write #4 → value='value_4'")
+        print(f"\n    - Different replicas ended up with different values:")
+        for val in sorted(unique_values):
+            write_id = val.split('_')[1] if '_' in val else '?'
+            print(f"      • Some replicas have '{val}' (from Write #{write_id})")
+        print("\n  Why this happens:")
+        print("    - All 5 writes started at the same time")
+        print("    - Each write replicates to all 5 followers (15 total replications)")
+        print("    - Each follower receives ALL 5 writes, but in DIFFERENT orders")
+        print("    - Network delays (0-1000ms) cause different arrival orders")
+        print("    - Each replica stores the LAST value it receives (overwrites previous)")
+        print("    - Example: Follower1 might get #2→#0→#4→#1→#3 (stores value_3)")
+        print("              Follower2 might get #1→#4→#0→#3→#2 (stores value_2)")
+        print("    - Result: Different replicas have different final values!")
+    else:
+        print(f"  All replicas converged to: {unique_values[0] if unique_values else 'NONE'}")
+        print("  (Race condition resolved - try reading faster or increase delays)")
+
+
 def check_data_consistency():
     """Check if data in all replicas matches the leader after all writes."""
     print("\n" + "=" * 60)
@@ -367,19 +474,22 @@ def check_data_consistency():
         print(f"⚠ Total value mismatches: {consistency_summary['value_mismatches_total']}")
     
     if all_consistent:
-        print("\n✓ SUCCESS: All followers have successfully replicated all data from the leader!")
+        print("\n✓ All followers have successfully replicated all data from the leader!")
+        print("  Note: In a real distributed system with concurrent writes, race conditions")
+        print("  and replication conflicts are expected and demonstrate eventual consistency.")
     else:
-        print("\n⚠ WARNING: Some followers are missing data or have mismatches.")
-        print("  This may be due to:")
-        print("  - Network delays (data will eventually replicate)")
-        print("  - Failed replication requests")
-        print("  - Timing issues (check again after a few seconds)")
+        print("\n⚠ Some followers are missing data or have mismatches.")
+        print("  This is EXPECTED and demonstrates:")
+        print("  - Race conditions in concurrent replication")
+        print("  - Replication conflicts (as described in the book)")
+        print("  - Eventual consistency (data will eventually become consistent)")
+        print("  - The challenges of maintaining consistency in distributed systems")
     
     return consistency_summary
 
 
 def plot_results(results):
-    """Plot write quorum vs average latency."""
+    """Plot write quorum vs latency metrics (mean, median, p95, p99)."""
     if not results:
         print("No results to plot")
         return
@@ -390,32 +500,26 @@ def plot_results(results):
         return
     
     quorums = [r['quorum'] for r in valid_results]
-    avg_latencies = [r['avg_latency'] for r in valid_results]
+    mean_latencies = [r['avg_latency'] / 1000.0 for r in valid_results]  # Convert to seconds
+    median_latencies = [r['median_latency'] / 1000.0 for r in valid_results]
+    p95_latencies = [r['p95_latency'] / 1000.0 for r in valid_results]
+    p99_latencies = [r['p99_latency'] / 1000.0 for r in valid_results]
     
-    plt.figure(figsize=(12, 7))
+    plt.figure(figsize=(12, 8))
     
-    # Main plot
-    plt.subplot(2, 1, 1)
-    plt.plot(quorums, avg_latencies, 'o-', linewidth=2, markersize=10, color='#2E86AB')
-    plt.xlabel('Write Quorum', fontsize=12)
-    plt.ylabel('Average Latency (ms)', fontsize=12)
-    plt.title('Write Quorum vs Average Latency', fontsize=14, fontweight='bold')
+    # Main plot with all metrics
+    plt.plot(quorums, mean_latencies, 'o-', linewidth=2, markersize=8, color='#2E86AB', label='mean')
+    plt.plot(quorums, median_latencies, 's-', linewidth=2, markersize=8, color='#FF6B35', label='median')
+    plt.plot(quorums, p95_latencies, '^-', linewidth=2, markersize=8, color='#4ECDC4', label='p95')
+    plt.plot(quorums, p99_latencies, 'd-', linewidth=2, markersize=8, color='#FFE66D', label='p99')
+    
+    plt.xlabel('Quorum value', fontsize=12)
+    plt.ylabel('Latency (s)', fontsize=12)
+    plt.title('Quorum vs. Latency, random delay in range [0, 1000ms]', fontsize=14, fontweight='bold')
     plt.grid(True, alpha=0.3)
-    plt.xticks(quorums)
-    
-    # Add value labels on points
-    for quorum, latency in zip(quorums, avg_latencies):
-        plt.annotate(f'{latency:.1f}ms', (quorum, latency), 
-                    textcoords="offset points", xytext=(0,10), ha='center', fontsize=9)
-    
-    # Box plot of latencies
-    plt.subplot(2, 1, 2)
-    latency_data = [r['latencies'] for r in valid_results]
-    plt.boxplot(latency_data, labels=[f"Q={q}" for q in quorums])
-    plt.xlabel('Write Quorum', fontsize=12)
-    plt.ylabel('Latency (ms)', fontsize=12)
-    plt.title('Latency Distribution by Write Quorum', fontsize=14, fontweight='bold')
-    plt.grid(True, alpha=0.3, axis='y')
+    plt.xticks(quorums, labels=[f'Q={q}' for q in quorums])
+    plt.legend(loc='upper left', fontsize=10)
+    plt.ylim(bottom=0)
     
     plt.tight_layout()
     plt.savefig('write_quorum_vs_latency.png', dpi=300, bbox_inches='tight')
@@ -490,14 +594,22 @@ def main():
         print("=" * 60)
         for result in all_results:
             print(f"Quorum {result['quorum']}: "
-                  f"Avg latency = {result['avg_latency']:.2f}ms, "
-                  f"Quorum met rate = {result['quorum_met_rate']*100:.1f}%")
+                  f"Mean = {result['avg_latency']:.2f}ms, "
+                  f"Median = {result['median_latency']:.2f}ms, "
+                  f"P95 = {result['p95_latency']:.2f}ms, "
+                  f"P99 = {result['p99_latency']:.2f}ms")
     
     # Check data consistency after all tests
     print("\nWaiting for final replications to complete...")
-    time.sleep(5)  # Give more time for background replications (especially from Q=1)
+    time.sleep(10)  # Give more time for background replications (especially from Q=1)
     
     consistency = check_data_consistency()
+    
+    # Demonstrate race condition with concurrent writes to same key
+    print("\n" + "=" * 60)
+    print("Race Condition Demonstration")
+    print("=" * 60)
+    demonstrate_race_condition_in_quorum_test()
     
     print("\n" + "=" * 60)
     print("Test Complete!")

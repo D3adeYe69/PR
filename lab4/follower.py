@@ -34,20 +34,28 @@ class ReplicateRequest(BaseModel):
 @app.post("/replicate")
 async def replicate(request: ReplicateRequest):
     """Replicate endpoint - accepts replication requests from leader."""
+    import time
+    receive_time = time.time()
+    
     try:
         key = request.key
         value = request.value
         
         # Store the replicated key-value pair
+        # This is where race conditions can occur - multiple concurrent writes
         store[key] = value
         
-        logger.info(f"Follower {FOLLOWER_ID} replicated key: {key}")
+        logger.info(
+            f"[RACE] Follower {FOLLOWER_ID} replicated key='{key}' "
+            f"at t={receive_time:.3f} (current store size: {len(store)})"
+        )
         
         return {
             "success": True,
             "key": key,
             "value": value,
-            "follower_id": FOLLOWER_ID
+            "follower_id": FOLLOWER_ID,
+            "timestamp": receive_time
         }
         
     except Exception as e:
